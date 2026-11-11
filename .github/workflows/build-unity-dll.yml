@@ -111,6 +111,56 @@ jobs:
           }
           Set-Content -Path $file -Value $updated -Encoding utf8
 
+      - name: Restore missing Unity WorldSimApi interface overrides
+        shell: pwsh
+        run: |
+          # The shared AirSim interface added two pure virtual methods after
+          # the Unity wrapper was written. Their absence prevents the DLL build.
+          # Keep unsupported operations explicit, matching other Unity APIs.
+          $header = 'colosseum/Unity/AirLibWrapper/AirsimWrapper/Source/WorldSimApi.h'
+          $cpp = 'colosseum/Unity/AirLibWrapper/AirsimWrapper/Source/WorldSimApi.cpp'
+          $h = Get-Content -LiteralPath $header -Raw
+          $c = Get-Content -LiteralPath $cpp -Raw
+          $nl = if ($h.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+          $sceneAnchor = '    virtual std::vector<std::string> listSceneObjects(const std::string& name_regex) const override;'
+          $scaleAnchor = '    virtual Vector3r getObjectScale(const std::string& object_name) const override;'
+          if (-not $h.Contains($sceneAnchor) -or -not $h.Contains($scaleAnchor)) {
+            throw 'WorldSimApi.h is different from the expected upstream version.'
+          }
+          if ($h.Contains('listSceneObjectsByTag(') -or $h.Contains('findLookAtRotation(')) {
+            throw 'WorldSimApi.h already declares the missing overrides; inspect upstream changes.'
+          }
+
+          $h = $h.Replace($sceneAnchor, $sceneAnchor + $nl +
+            '    std::vector<std::string> listSceneObjectsByTag(const std::string& tag_regex) const override;')
+          $h = $h.Replace($scaleAnchor, $scaleAnchor + $nl +
+            '    Vector3r findLookAtRotation(const std::string& vehicle_name, const std::string& object_name) override;')
+
+          $cppAnchor = 'WorldSimApi::Pose WorldSimApi::getObjectPose(const std::string& object_name) const'
+          if (-not $c.Contains($cppAnchor)) {
+            throw 'WorldSimApi.cpp is different from the expected upstream version.'
+          }
+          if ($c.Contains('WorldSimApi::listSceneObjectsByTag(') -or $c.Contains('WorldSimApi::findLookAtRotation(')) {
+            throw 'WorldSimApi.cpp already defines the missing overrides; inspect upstream changes.'
+          }
+          $cppAdditions = @'
+          std::vector<std::string> WorldSimApi::listSceneObjectsByTag(const std::string& tag_regex) const
+          {
+              throw std::invalid_argument("listSceneObjectsByTag is not supported on Unity");
+          }
+
+          WorldSimApi::Vector3r WorldSimApi::findLookAtRotation(const std::string& vehicle_name, const std::string& object_name)
+          {
+              throw std::invalid_argument("findLookAtRotation is not supported on Unity");
+          }
+
+          '@
+          $c = $c.Replace($cppAnchor, $cppAdditions + $cppAnchor)
+          Set-Content -LiteralPath $header -Value $h -Encoding utf8
+          Set-Content -LiteralPath $cpp -Value $c -Encoding utf8
+          Write-Host 'Restored the two pure virtual WorldSimApi methods missing from the Unity wrapper.'
+
       - name: Build Unity native wrapper DLL
         working-directory: colosseum/Unity
         shell: cmd
