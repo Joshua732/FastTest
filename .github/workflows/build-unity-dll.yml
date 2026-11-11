@@ -62,10 +62,43 @@ jobs:
           Set-Content -LiteralPath $file -Value $patched -Encoding utf8
           Write-Host 'AirLib warning C4127 suppressed; all other warnings-as-errors remain enabled.'
 
+      - name: Fix Colosseum Release path quoting in native build script
+        shell: pwsh
+        run: |
+          # Upstream build.cmd assigns buildMode with embedded quotes:
+          # set buildMode="Release"
+          # Later it expands that variable in unquoted robocopy paths,
+          # producing an invalid destination and leaving rpc.lib missing.
+          $file = 'colosseum/build.cmd'
+          $source = Get-Content -LiteralPath $file -Raw
+          $old = 'set buildMode="Release"'
+          $new = 'set buildMode=Release'
+          if (-not $source.Contains($old)) {
+            throw "Expected Release assignment not found in $file. Inspect upstream build.cmd before continuing."
+          }
+          $source = $source.Replace($old, $new)
+          Set-Content -LiteralPath $file -Value $source -Encoding ascii
+          Write-Host 'Patched Release mode to avoid malformed robocopy paths.'
+
       - name: Build Colosseum native libraries
         working-directory: colosseum
         shell: cmd
         run: call build.cmd --Release --no-full-poly-car
+
+      - name: Verify native dependencies
+        shell: pwsh
+        run: |
+          $required = @(
+            'colosseum/AirLib/deps/rpclib/lib/x64/Release/rpc.lib',
+            'colosseum/AirLib/lib/x64/Release/AirLib.lib',
+            'colosseum/MavLinkCom/lib/x64/Release/MavLinkCom.lib'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing native library: $path"
+            }
+            Get-Item -LiteralPath $path | Select-Object FullName, Length
+          }
 
       - name: Correct outdated rpclib include path in Unity project
         shell: pwsh
@@ -98,3 +131,4 @@ jobs:
           path: colosseum/Unity/UnityDemo/Assets/Plugins/AirsimWrapper.dll
           if-no-files-found: error
           retention-days: 30
+
