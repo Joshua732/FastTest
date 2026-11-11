@@ -1,0 +1,84 @@
+name: Build Colosseum AirsimWrapper DLL
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-unity-dll:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      VisualStudioVersion: '17.0'
+
+    steps:
+      - name: Enable long Git paths
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Get Colosseum source
+        uses: actions/checkout@v4
+        with:
+          repository: CodexLabsLLC/Colosseum
+          ref: main
+          path: colosseum
+          submodules: false
+          persist-credentials: false
+
+      - name: Restore Eigen headers (upstream submodule is unavailable)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'eigen-3.4.0.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'eigen-extracted'
+          Invoke-WebRequest -Uri 'https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $extract
+          $source = Join-Path $extract 'eigen-3.4.0/Eigen'
+          if (-not (Test-Path $source)) { throw "Eigen headers not found: $source" }
+          $dest = 'colosseum/ExternalRepositories/Colosseum_Eigen/Eigen'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path (Join-Path $source '*') -Destination $dest -Recurse -Force
+
+      - name: Locate MSBuild from Visual Studio 2022
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '[17.0,18.0)'
+          msbuild-architecture: x64
+
+      - name: Build Colosseum native libraries
+        working-directory: colosseum
+        shell: cmd
+        run: call build.cmd --Release --no-full-poly-car
+
+      - name: Correct outdated rpclib include path in Unity project
+        shell: pwsh
+        run: |
+          $file = 'colosseum/Unity/AirLibWrapper/AirsimWrapper/AirsimWrapper.vcxproj'
+          $original = Get-Content $file -Raw
+          $updated = $original.Replace('rpclib-2.2.1', 'rpclib-2.3.1')
+          if ($updated -eq $original) {
+            Write-Warning 'Legacy rpclib path was not found; check upstream project changes.'
+          }
+          Set-Content -Path $file -Value $updated -Encoding utf8
+
+      - name: Build Unity native wrapper DLL
+        working-directory: colosseum/Unity
+        shell: cmd
+        run: call build.cmd
+
+      - name: Verify Windows DLL
+        shell: pwsh
+        run: |
+          $dll = 'colosseum/Unity/UnityDemo/Assets/Plugins/AirsimWrapper.dll'
+          if (-not (Test-Path $dll)) { throw "DLL not found: $dll" }
+          Get-Item $dll | Select-Object FullName, Length
+          Get-FileHash $dll -Algorithm SHA256 | Format-List
+
+      - name: Upload AirsimWrapper DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirsimWrapper-Windows-x64
+          path: colosseum/Unity/UnityDemo/Assets/Plugins/AirsimWrapper.dll
+          if-no-files-found: error
+          retention-days: 30
