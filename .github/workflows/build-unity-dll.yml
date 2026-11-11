@@ -46,6 +46,22 @@ jobs:
           vs-version: '[17.0,18.0)'
           msbuild-architecture: x64
 
+      - name: Suppress Eigen C4127 warning in AirLib
+        shell: pwsh
+        run: |
+          # Eigen emits C4127 (constant conditional). AirLib treats warnings as errors.
+          # Keep /WX enabled and suppress only this known third-party warning.
+          $file = 'colosseum/AirLib/AirLib.vcxproj'
+          $source = Get-Content -LiteralPath $file -Raw
+          $old = '/w34263 /w34266 %(AdditionalOptions)'
+          $new = '/w34263 /w34266 /wd4127 %(AdditionalOptions)'
+          if (-not $source.Contains($old)) {
+            throw 'Expected compiler options not found in AirLib.vcxproj; upstream may have changed.'
+          }
+          $patched = $source.Replace($old, $new)
+          Set-Content -LiteralPath $file -Value $patched -Encoding utf8
+          Write-Host 'AirLib warning C4127 suppressed; all other warnings-as-errors remain enabled.'
+
       - name: Build Colosseum native libraries
         working-directory: colosseum
         shell: cmd
